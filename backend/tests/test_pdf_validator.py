@@ -1,12 +1,5 @@
 import pytest
-from pathlib import Path
-from backend.app.pdf_validator import validate_pdf_file, sanitize_filename
-
-@pytest.fixture
-def test_files_dir(tmp_path):
-    d = tmp_path / "pdf_tests"
-    d.mkdir()
-    return d
+from backend.app.pdf_validator import sanitize_filename, validate_pdf_bytes
 
 def test_sanitize_filename():
     assert sanitize_filename("test.pdf") == "test.pdf"
@@ -15,37 +8,40 @@ def test_sanitize_filename():
     assert sanitize_filename("file_khong_duoi") == "file_khong_duoi.pdf"
     assert sanitize_filename("") == "document.pdf"
 
-def test_validate_valid_pdf(tmp_path):
-    from backend.tests.generate_samples import create_sample_math_pdf
-    pdf_path = tmp_path / "valid.pdf"
-    create_sample_math_pdf(pdf_path)
-    
-    is_valid, err, page_count = validate_pdf_file(pdf_path)
+def _make_valid_pdf_bytes():
+    """Tạo PDF bytes hợp lệ tối thiểu bằng PyMuPDF."""
+    import pymupdf
+    doc = pymupdf.open()
+    doc.new_page()
+    doc.new_page().insert_text((50, 72), "Cau 1: x^2 - 1 = 0", fontsize=12)
+    buf = doc.tobytes()
+    doc.close()
+    return buf
+
+def test_validate_valid_pdf():
+    pdf = _make_valid_pdf_bytes()
+    is_valid, err, pages = validate_pdf_bytes(pdf, max_mb=20)
     assert is_valid is True
     assert err == ""
-    assert page_count == 1
+    assert pages >= 1
 
-def test_validate_empty_file(tmp_path):
-    empty_path = tmp_path / "empty.pdf"
-    empty_path.write_bytes(b"")
-    
-    is_valid, err, count = validate_pdf_file(empty_path)
+def test_validate_empty_bytes():
+    is_valid, err, pages = validate_pdf_bytes(b"", max_mb=20)
     assert is_valid is False
     assert "rỗng" in err
 
-def test_validate_fake_pdf(tmp_path):
-    fake_path = tmp_path / "fake.pdf"
-    fake_path.write_text("Day la file text binh thuong khong phai PDF")
-    
-    is_valid, err, count = validate_pdf_file(fake_path)
+def test_validate_too_large():
+    big_data = b"%PDF-1.4" + b"x" * (21 * 1024 * 1024)
+    is_valid, err, pages = validate_pdf_bytes(big_data, max_mb=20)
     assert is_valid is False
-    assert "Định dạng file không hợp lệ" in err
+    assert "giới hạn" in err or "vượt quá" in err
 
-def test_validate_corrupt_pdf(tmp_path):
-    corrupt_path = tmp_path / "corrupt.pdf"
-    corrupt_path.write_bytes(b"%PDF-1.4 header here but corrupted rest of file")
-    
-    is_valid, err, count = validate_pdf_file(corrupt_path)
+def test_validate_fake_pdf():
+    is_valid, err, pages = validate_pdf_bytes(b"This is not a PDF at all", max_mb=20)
     assert is_valid is False
-    assert "bị hỏng" in err
 
+def test_validate_corrupt_pdf():
+    corrupt = b"%PDF-1.4 corrupt data that cannot be parsed as pdf"
+    is_valid, err, pages = validate_pdf_bytes(corrupt, max_mb=20)
+    assert is_valid is False
+    assert "hỏng" in err

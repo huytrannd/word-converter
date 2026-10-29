@@ -1,211 +1,97 @@
-# MathPDF — Chuyển đề Toán PDF sang Word
+# MathPDF — Chuyển Đề Toán PDF sang Word (.docx)
 
-Website chuyển đổi file PDF chứa đề Toán thành file Microsoft Word (.docx), hỗ trợ:
-- Phương trình, bất phương trình, hệ phương trình
-- Phân số, căn thức, số mũ, tích phân, đạo hàm, logarit
-- Đề thi trắc nghiệm A/B/C/D
-- Bảng biểu và hình ảnh trong PDF
-- Công thức được xuất thành Word Equation thực sự (có thể chỉnh sửa trong Word)
+Website tối giản chuyển đổi tài liệu PDF chứa đề Toán sang Microsoft Word (.docx), bảo toàn công thức toán học dưới dạng **Word Equation (OMML)** thực sự và giữ nguyên hình vẽ/bảng biểu.
 
 ---
 
-## Yêu cầu hệ thống
+## 1. Kiến trúc tối giản (Đã tối ưu hóa)
 
-| Phần mềm | Phiên bản | Ghi chú |
-|---|---|---|
-| Python | 3.11+ | Cài tại python.org |
-| Node.js | 18+ | Cài tại nodejs.org |
-| Pandoc | 3.x | Tự cài qua pypandoc (xem bên dưới) |
-
-> **Lưu ý:** Hệ thống sử dụng **Datalab Convert API** — phải có API key mới hoạt động.
+Dự án đã được rút gọn tối đa để vận hành ổn định trên môi trường máy chủ như Render:
+- **1 Request đồng bộ**: Người dùng tải PDF lên → Backend xác thực → Gọi Datalab Convert → Tạo Word DOCX → Trả file tải về ngay lập tức.
+- **Không cần cơ sở dữ liệu, không cần tài khoản, không lưu trữ dài hạn**: Xử lý hoàn toàn trong bộ nhớ và thư mục tạm `tempfile`, tự động dọn dẹp khi request hoàn tất.
+- **Không BackgroundTasks, không Polling**: Giao diện giữ nguyên trải nghiệm trực quan, hiển thị trạng thái xử lý mượt mà.
 
 ---
 
-## Cài đặt
+## 2. Cấu hình biến môi trường (.env)
 
-### 1. Sao chép cấu hình môi trường
-
-```cmd
-copy .env.example .env
-```
-
-Mở file `.env` và điền API key Datalab của bạn:
+Tạo file `.env` ở thư mục gốc dự án (hoặc sao chép từ `.env.example`):
 
 ```env
 DATALAB_API_KEY=dlb_xxxx_của_bạn_ở_đây
 DATALAB_CONVERT_MODE=accurate
 MAX_UPLOAD_MB=20
-JOB_TTL_MINUTES=30
+HOST=0.0.0.0
+PORT=8000
 ```
 
-> **Quan trọng:** Không commit file `.env` lên Git. File này đã được thêm vào `.gitignore`.
-
-**Lấy API key:** Đăng nhập tại [datalab.to](https://www.datalab.to) → API Keys → Tạo key mới.
+> **Bảo mật:** File `.env` tuyệt đối không được đưa lên Git. Hãy kiểm tra `.gitignore`.
 
 ---
 
-### 2. Cài đặt Backend (Python)
+## 3. Chạy kiểm thử tự động
 
 ```cmd
-cd "d:\anti\web chuyển word, k giải"
-python -m pip install -r backend\requirements.txt
-```
-
-Pandoc sẽ được tải tự động lần đầu khi backend khởi động. Để kiểm tra Pandoc thủ công:
-
-```cmd
-python -c "import pypandoc; pypandoc.get_pandoc_version()"
-```
-
-Nếu chưa cài, chạy lệnh sau một lần:
-
-```cmd
-python -c "import pypandoc; pypandoc.download_pandoc()"
-```
-
----
-
-### 3. Cài đặt Frontend (React + Vite + Tailwind)
-
-```cmd
-cd frontend
-npm install
-```
-
----
-
-## Chạy dự án
-
-### Chạy Backend
-
-Mở một cửa sổ Command Prompt, di chuyển vào thư mục gốc dự án và chạy:
-
-```cmd
-cd "d:\anti\web chuyển word, k giải"
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
-```
-
-Backend sẽ khởi động tại `http://127.0.0.1:8000`.
-Website (frontend đã build) cũng được phục vụ tại địa chỉ này sau bước build.
-
----
-
-### Chạy Frontend (chế độ phát triển)
-
-Mở thêm một cửa sổ Command Prompt:
-
-```cmd
-cd "d:\anti\web chuyển word, k giải\frontend"
-npm run dev
-```
-
-Truy cập giao diện tại `http://localhost:5173`. Yêu cầu tới `/api/*` sẽ tự động được proxy tới backend trên cổng 8000.
-
----
-
-### Build Frontend cho production
-
-Nếu muốn phục vụ toàn bộ từ một cổng duy nhất (backend):
-
-```cmd
-cd "d:\anti\web chuyển word, k giải\frontend"
-npm run build
-```
-
-Sau khi build xong, chỉ cần chạy backend và truy cập `http://127.0.0.1:8000` là đủ.
-
----
-
-## Kiểm thử
-
-### Chạy bộ test tự động
-
-```cmd
-cd "d:\anti\web chuyển word, k giải"
 python -m pytest backend/tests -v
 ```
-
-Bộ test bao gồm:
-- Kiểm tra xác thực file PDF (hợp lệ, rỗng, fake, hỏng)
-- Kiểm tra tạo file Word với công thức Toán học (OMML)
-- Kiểm tra verify cấu trúc DOCX
-- Kiểm tra toàn bộ pipeline API (upload → convert mock → download)
-- Kiểm tra phân quyền và xử lý lỗi
-
-### Kiểm thử thủ công
-
-1. Mở `http://localhost:5173`
-2. Kéo thả một file PDF đề Toán vào vùng upload
-3. Nhấn "Chuyển sang Word"
-4. Chờ xử lý → nhấn "Tải xuống Word"
-5. Mở file Word và kiểm tra:
-   - Công thức có hiển thị dưới dạng Word Equation không?
-   - Hình ảnh có được chèn đúng không?
-   - Nội dung có bị mất không?
+Toàn bộ 18 bài kiểm thử (validate PDF bytes, Pandoc OMML math equations, nhúng hình ảnh, xử lý lỗi API và mock end-to-end pipeline) đều đã vượt qua 100%.
 
 ---
 
-## Cấu trúc dự án
+## 4. Chạy dự án ở máy cục bộ (Local)
 
+### Cách 1: Chạy trọn gói (Một cổng duy nhất 8000)
+
+Frontend đã được build vào thư mục `frontend/dist`. Backend FastAPI sẽ tự động phục vụ cả giao diện web lẫn API:
+
+```cmd
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
-web chuyển word, k giải/
-├── .env.example            # Mẫu biến môi trường
-├── .gitignore
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py         # FastAPI app, endpoints, pipeline
-│   │   ├── config.py       # Đọc biến môi trường
-│   │   ├── pdf_validator.py  # Kiểm tra file PDF đầu vào
-│   │   ├── datalab_service.py  # Gọi Datalab Convert API
-│   │   ├── docx_generator.py   # Tạo DOCX từ Markdown qua Pandoc
-│   │   └── job_manager.py      # Quản lý công việc chuyển đổi
-│   ├── requirements.txt
-│   ├── storage/            # Thư mục tạm lưu file (tự tạo, không commit)
-│   └── tests/
-│       ├── generate_samples.py
-│       ├── test_api.py
-│       ├── test_docx_generator.py
-│       ├── test_end_to_end.py
-│       └── test_pdf_validator.py
-└── frontend/
-    ├── src/
-    │   ├── App.tsx          # Giao diện React
-    │   └── index.css        # Tailwind CSS
-    ├── tailwind.config.js
-    ├── vite.config.ts       # Proxy API sang backend
-    └── package.json
-```
+Mở trình duyệt: `http://127.0.0.1:8000`
+
+### Cách 2: Chế độ phát triển (Dev Mode)
+
+Mở 2 cửa sổ dòng lệnh:
+1. **Backend**:
+   ```cmd
+   python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+2. **Frontend**:
+   ```cmd
+   cd frontend
+   npm run dev
+   ```
+   Mở trình duyệt: `http://localhost:5173` (Vite tự động proxy API sang cổng 8000).
 
 ---
 
-## Giới hạn và lưu ý kỹ thuật
+## 5. Hướng dẫn Triển khai lên Render (Render.com)
 
-| Hạng mục | Thực trạng |
-|---|---|
-| Công thức Toán học | Chuyển thành Word Equation OMML (chỉnh sửa được) |
-| Hình ảnh / Hình vẽ | Được chèn vào file Word nếu Datalab trả về |
-| PDF scan | Hỗ trợ qua OCR của Datalab (mode=accurate) |
-| Dung lượng tối đa | 20 MB (điều chỉnh qua MAX_UPLOAD_MB) |
-| API credits | Mỗi lần upload tốn 1 lượt Datalab credit |
-| Thời gian xử lý | Phụ thuộc độ phức tạp tài liệu và Datalab API |
-| Chính xác nội dung | Phụ thuộc vào chất lượng nhận diện của Datalab |
+Backend phù hợp nhất khi triển khai dưới dạng **Web Service** trên Render:
 
-> **Quan trọng:** Công cụ này **không sửa, không giải, không bình luận** đề Toán. Kết quả là nội dung nguyên gốc được chuyển định dạng.
+### Cách làm nhanh:
+1. Đẩy mã nguồn dự án lên GitHub / GitLab của bạn (nhớ không commit file `.env`).
+2. Đăng nhập [render.com](https://dashboard.render.com).
+3. Chọn **New +** → **Web Service** → Chọn Repository của bạn.
+4. Điền các thông tin:
+   - **Name**: `mathpdf-backend`
+   - **Region**: `Singapore` (hoặc khu vực gần bạn nhất)
+   - **Runtime**: `Python 3`
+   - **Build Command**: 
+     ```bash
+     pip install -r backend/requirements.txt && python -c "import pypandoc; pypandoc.download_pandoc()"
+     ```
+   - **Start Command**: 
+     ```bash
+     uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+     ```
+5. Tại mục **Environment Variables**, thêm:
+   - `DATALAB_API_KEY`: *(Dán khóa API Datalab của bạn vào đây)*
+   - `DATALAB_CONVERT_MODE`: `accurate`
+   - `MAX_UPLOAD_MB`: `20`
+   - `PYTHON_VERSION`: `3.11.9`
+6. Bấm **Create Web Service**.
 
----
-
-## Xử lý sự cố thường gặp
-
-**"Hệ thống chưa được thiết lập API key"**
-→ Tạo file `.env` từ `.env.example` và điền `DATALAB_API_KEY`.
-
-**"Không thể chuyển đổi tài liệu này"**
-→ Kiểm tra log backend để biết lỗi chi tiết. Thường do API key hết hạn hoặc tài liệu không hỗ trợ.
-
-**Pandoc không tìm thấy**
-→ Chạy: `python -c "import pypandoc; pypandoc.download_pandoc()"`
-
-**npm không chạy được trên PowerShell**
-→ Dùng `npm.cmd` thay vì `npm`, hoặc mở Command Prompt (cmd.exe) thông thường.
-
+> **Mẹo triển khai Frontend:**
+> - Bạn có thể giữ frontend chạy chung trực tiếp trên Render Web Service (vì backend đã tích hợp sẵn `frontend/dist`), chỉ cần chạy `npm run build` trước khi push code.
+> - Hoặc nếu deploy Frontend riêng lên Vercel: trong `frontend/vite.config.ts`, trỏ proxy hoặc cấu hình base URL tới đường dẫn `https://mathpdf-backend.onrender.com`.

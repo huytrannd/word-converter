@@ -1,106 +1,120 @@
-import os
 import logging
+import tempfile
 from pathlib import Path
 from typing import Tuple, Optional
 from .config import settings
 
 logger = logging.getLogger("datalab_service")
 
-class DatalabService:
-    def __init__(self):
-        self.api_key = settings.DATALAB_API_KEY
-        self.mode = settings.DATALAB_CONVERT_MODE
+def check_api_configuration() -> Tuple[bool, str]:
+    """Kiểm tra API key đã cấu hình chưa, không để lộ giá trị key."""
+    if not settings.is_api_key_configured:
+        return False, "Hệ thống chưa được cấu hình DATALAB_API_KEY."
+    return True, ""
 
-    def check_configuration(self) -> Tuple[bool, str]:
-        """Kiểm tra cấu hình API key mà không làm lộ key."""
-        if not settings.is_api_key_configured:
-            return False, "Hệ thống chưa được cấu hình API key Datalab (DATALAB_API_KEY)."
-        return True, ""
+def convert_pdf_bytes_to_markdown(
+    pdf_bytes: bytes,
+    original_filename: str = "document.pdf"
+) -> Tuple[bool, Optional[str], list, str]:
+    """
+    Gọi Datalab Convert API để chuyển PDF sang Markdown.
+    Nhận bytes, ghi vào tempfile trong quá trình xử lý, xóa sau khi xong.
 
-    def convert_pdf_to_markdown(self, pdf_path: Path, output_dir: Path) -> Tuple[bool, Optional[Path], str]:
-        """
-        Gọi Datalab Convert API để chuyển file PDF sang Markdown và lưu các hình ảnh đính kèm.
-        Trả về: (success: bool, markdown_file_path: Optional[Path], error_message: str)
-        """
-        is_configured, config_err = self.check_configuration()
-        if not is_configured:
-            return False, None, config_err
+    Trả về:
+        (success, markdown_text, images_list, error_message)
+        images_list: danh sách dict {"name": str, "data": bytes}
+    """
+    is_ok, err = check_api_configuration()
+    if not is_ok:
+        return False, None, [], err
 
-        try:
-            from datalab_sdk import DatalabClient, ConvertOptions
-            from datalab_sdk.exceptions import (
-                DatalabAuthenticationError,
-                DatalabPaymentRequiredError,
-                DatalabRateLimitError,
-                DatalabTimeoutError,
-                DatalabAPIError
-            )
-        except ImportError as e:
-            return False, None, f"Lỗi nạp thư viện Datalab SDK: {str(e)}"
+    try:
+        from datalab_sdk import DatalabClient, ConvertOptions
+        from datalab_sdk.exceptions import (
+            DatalabAuthenticationError,
+            DatalabPaymentRequiredError,
+            DatalabRateLimitError,
+            DatalabTimeoutError,
+            DatalabAPIError,
+        )
+    except ImportError as e:
+        return False, None, [], f"Lỗi nạp thư viện Datalab SDK: {e}"
 
-        try:
-            # Khởi tạo client với API key bảo mật từ biến môi trường
-            client = DatalabClient(api_key=self.api_key)
+    try:
+        client = DatalabClient(api_key=settings.DATALAB_API_KEY)
+        options = ConvertOptions(
+            output_format="markdown",
+            mode=settings.DATALAB_CONVERT_MODE,
+            paginate=True,
+        )
 
-            options = ConvertOptions(
-                output_format="markdown",
-                mode=self.mode,
-                paginate=True
-            )
+        # Ghi PDF vào tempfile để Datalab SDK đọc, xóa ngay sau khi xong
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_pdf = Path(tmp_dir) / original_filename
+            tmp_pdf.write_bytes(pdf_bytes)
 
-            logger.info("Bắt đầu gửi tài liệu tới Datalab API...")
-            # Gọi Datalab Convert API với polling tích hợp của SDK
+            logger.info(f"Gửi tài liệu tới Datalab API (mode={settings.DATALAB_CONVERT_MODE})...")
             result = client.convert(
-                file_path=str(pdf_path),
+                file_path=str(tmp_pdf),
                 options=options,
+                save_output=tmp_dir,       # SDK lưu markdown + ảnh vào đây
                 max_polls=180,
-                poll_interval=2
+                poll_interval=2,
             )
 
-            # Kiểm tra trạng thái trả về
+            # Kiểm tra kết quả
             if hasattr(result, "status") and result.status != "complete":
-                err_msg = getattr(result, "error", None) or "Quá trình chuyển đổi tài liệu chưa hoàn thành."
-                return False, None, f"Datalab trả về trạng thái không hoàn thành: {err_msg}"
+                err_msg = getattr(result, "error", None) or "Chuyển đổi chưa hoàn thành."
+                return False, None, [], f"Datalab trả về trạng thái không hoàn thành: {err_msg}"
 
             if hasattr(result, "error") and result.error:
-                return False, None, f"Datalab báo lỗi: {result.error}"
+                return False, None, [], f"Datalab báo lỗi: {result.error}"
 
-            # Lưu output (markdown và các hình ảnh trích xuất)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            if hasattr(result, "save_output"):
-                result.save_output(output_path=str(output_dir), save_images=True)
+            # Lấy nội dung markdown
+            markdown_text = None
+            if hasattr(result, "markdown") and result.markdown:
+                markdown_text = result.markdown
+            else:
+                # SDK đã lưu file .md vào tmp_dir qua save_output
+                md_files = list(Path(tmp_dir).glob("*.md"))
+                if md_files:
+                    markdown_text = md_files[0].read_text(encoding="utf-8")
 
-            # Tìm file markdown vừa được lưu trong output_dir
-            md_files = list(output_dir.glob("*.md"))
-            if not md_files:
-                # Nếu save_output không ghi file .md mà nội dung nằm trong result.markdown
-                if hasattr(result, "markdown") and result.markdown:
-                    md_path = output_dir / "document.md"
-                    with open(md_path, "w", encoding="utf-8") as f:
-                        f.write(result.markdown)
-                    return True, md_path, ""
-                return False, None, "Không tìm thấy nội dung Markdown sau khi Datalab hoàn tất xử lý."
+            if not markdown_text:
+                return False, None, [], "Không tìm thấy nội dung Markdown sau khi Datalab xử lý."
 
-            return True, md_files[0], ""
+            # Lấy hình ảnh đã trích xuất (nếu có)
+            images = []
+            if hasattr(result, "images") and result.images:
+                # result.images là dict {filename: bytes} theo SDK
+                for name, data in result.images.items():
+                    if isinstance(data, bytes):
+                        images.append({"name": name, "data": data})
+            else:
+                # Fallback: tìm file ảnh trong tmp_dir do save_output ghi
+                for img_file in Path(tmp_dir).glob("*.png"):
+                    images.append({"name": img_file.name, "data": img_file.read_bytes()})
+                for img_file in Path(tmp_dir).glob("*.jpg"):
+                    images.append({"name": img_file.name, "data": img_file.read_bytes()})
 
-        except DatalabAuthenticationError:
-            logger.error("Datalab Authentication Failed: Khóa API không hợp lệ hoặc đã hết hạn.")
-            return False, None, "Lỗi xác thực Datalab API: Khóa API không hợp lệ hoặc đã bị vô hiệu hóa."
-        except DatalabPaymentRequiredError:
-            logger.error("Datalab Payment Required: Tài khoản không đủ credit.")
-            return False, None, "Tài khoản Datalab API đã hết hạn mức credit."
-        except DatalabRateLimitError:
-            logger.error("Datalab Rate Limit: Đã vượt quá giới hạn tần suất gọi API.")
-            return False, None, "Đã vượt quá giới hạn tần suất yêu cầu tới Datalab API. Vui lòng thử lại sau giây lát."
-        except DatalabTimeoutError:
-            logger.error("Datalab Timeout: Quá thời gian chờ phản hồi từ Datalab.")
-            return False, None, "Quá thời gian xử lý từ máy chủ Datalab. Vui lòng thử lại với tài liệu ngắn hơn."
-        except DatalabAPIError as e:
-            logger.error(f"Datalab API Error: {str(e)}")
-            return False, None, f"Lỗi từ dịch vụ Datalab: {str(e)}"
-        except Exception as e:
-            logger.error(f"Unexpected conversion error: {str(e)}")
-            return False, None, f"Lỗi xử lý trong quá trình giao tiếp với Datalab API: {str(e)}"
+            logger.info(f"Datalab hoàn tất: {len(markdown_text)} ký tự, {len(images)} hình ảnh.")
+            return True, markdown_text, images, ""
 
-datalab_service = DatalabService()
-
+    except DatalabAuthenticationError:
+        logger.error("Datalab Auth Error: API key không hợp lệ hoặc hết hạn.")
+        return False, None, [], "Lỗi xác thực Datalab API: Khóa API không hợp lệ."
+    except DatalabPaymentRequiredError:
+        logger.error("Datalab Payment Required: Hết credit.")
+        return False, None, [], "Tài khoản Datalab API đã hết credit."
+    except DatalabRateLimitError:
+        logger.error("Datalab Rate Limit exceeded.")
+        return False, None, [], "Đã vượt quá giới hạn tần suất Datalab API. Vui lòng thử lại sau giây lát."
+    except DatalabTimeoutError:
+        logger.error("Datalab Timeout.")
+        return False, None, [], "Quá thời gian chờ xử lý. Vui lòng thử với tài liệu ngắn hơn."
+    except DatalabAPIError as e:
+        logger.error(f"Datalab API Error: {e}")
+        return False, None, [], f"Lỗi từ dịch vụ Datalab: {e}"
+    except Exception as e:
+        logger.error(f"Unexpected error during conversion: {e}")
+        return False, None, [], f"Lỗi không xác định trong quá trình gọi Datalab API: {e}"

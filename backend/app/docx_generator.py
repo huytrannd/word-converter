@@ -1,150 +1,138 @@
-import os
 import re
 import zipfile
+import tempfile
+import logging
 from pathlib import Path
-from typing import Tuple, List
-import pypandoc
+from typing import Tuple, List, Dict
 
-def ensure_pandoc_available() -> bool:
-    """Đảm bảo Pandoc đã sẵn sàng hoạt động."""
+logger = logging.getLogger("docx_generator")
+
+def _ensure_pandoc() -> bool:
+    """Đảm bảo Pandoc sẵn sàng. Tự tải về nếu chưa có (Render hỗ trợ)."""
     try:
+        import pypandoc
         pypandoc.get_pandoc_version()
         return True
     except Exception:
         try:
+            import pypandoc
             pypandoc.download_pandoc()
             pypandoc.get_pandoc_version()
             return True
         except Exception:
             return False
 
-def fix_image_paths_in_markdown(markdown_content: str, images_dir: Path) -> str:
+def _fix_image_refs(markdown: str, images: List[Dict]) -> str:
     """
-    Chuẩn hóa các đường dẫn hình ảnh trong Markdown để Pandoc tìm thấy đúng file ảnh trên đĩa.
-    Ví dụ: ![](image_0.png) -> ![](/absolute/path/to/image_0.png) hoặc đường dẫn tương đối đúng.
+    Chuẩn hóa đường dẫn ảnh trong Markdown theo danh sách images đã nhận được.
+    images: [{"name": "img0.png", "data": bytes}, ...]
+    Hàm này không ghi file — chỉ thay thế tên để khớp với tên file sẽ được ghi vào tmpdir.
     """
-    if not images_dir.exists():
-        return markdown_content
+    if not images:
+        return markdown
 
-    # Tìm các mẫu ![](...)
-    def replace_img_src(match):
+    image_names = {img["name"] for img in images}
+
+    def replace_img(match):
         alt = match.group(1)
         src = match.group(2).strip()
-        # Nếu đường dẫn đã là tuyệt đối và tồn tại, giữ nguyên
-        src_path = Path(src)
-        if src_path.is_file():
-            return f"![{alt}]({src_path.as_posix()})"
-        
-        # Thử tìm file theo tên trong images_dir
-        candidate = images_dir / src_path.name
-        if candidate.is_file():
-            return f"![{alt}]({candidate.as_posix()})"
-        
+        # Nếu basename của src khớp với một file trong images, giữ basename
+        basename = Path(src).name
+        if basename in image_names:
+            return f"![{alt}]({basename})"
         return match.group(0)
 
-    pattern = r'!\[(.*?)\]\((.*?)\)'
-    updated = re.sub(pattern, replace_img_src, markdown_content)
-    return updated
+    return re.sub(r'!\[(.*?)\]\((.*?)\)', replace_img, markdown)
 
-def generate_docx_from_markdown(
-    markdown_path: Path,
-    output_docx_path: Path,
-    resource_dir: Path
-) -> Tuple[bool, str]:
+def generate_docx_from_markdown_and_images(
+    markdown_text: str,
+    images: List[Dict],
+    output_filename: str = "output.docx"
+) -> Tuple[bool, bytes, str]:
     """
-    Tạo file Word (.docx) từ file Markdown bằng Pandoc với hỗ trợ công thức Toán học (OMML) và hình ảnh.
-    """
-    if not ensure_pandoc_available():
-        return False, "Công cụ Pandoc chưa sẵn sàng trên hệ thống máy chủ."
+    Tạo DOCX từ Markdown (có thể chứa công thức LaTeX $...$ và $$...$$) và hình ảnh.
+    Dùng Pandoc để chuyển đổi — tất cả file tạm được xử lý trong tempfile.TemporaryDirectory.
 
-    if not markdown_path.exists():
-        return False, "Không tìm thấy file nội dung Markdown để chuyển đổi."
+    Trả về: (success, docx_bytes, error_message)
+    """
+    if not _ensure_pandoc():
+        return False, b"", "Pandoc chưa sẵn sàng trên máy chủ."
+
+    if not markdown_text or not markdown_text.strip():
+        return False, b"", "Nội dung Markdown trống, không thể tạo file Word."
 
     try:
-        # Đọc nội dung Markdown và chuẩn hóa đường dẫn hình ảnh
-        with open(markdown_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        import pypandoc
 
-        fixed_content = fix_image_paths_in_markdown(content, resource_dir)
-        temp_fixed_md = markdown_path.parent / "processed_content.md"
-        with open(temp_fixed_md, "w", encoding="utf-8") as f:
-            f.write(fixed_content)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
 
-        # Pandoc chuyển đổi Markdown sang docx:
-        # --from=markdown+tex_math_dollars+raw_tex bảo toàn các công thức $...$, $$...$$ thành OMML Equation
-        # --resource-path hỗ trợ tìm kiếm hình ảnh
-        extra_args = [
-            '--from=markdown+tex_math_dollars+raw_tex+pipe_tables+strikeout',
-            f'--resource-path={resource_dir.as_posix()}',
-        ]
+            # 1. Ghi hình ảnh vào tempdir để Pandoc tìm thấy
+            for img in images:
+                img_file = tmp_path / img["name"]
+                img_file.write_bytes(img["data"])
 
-        pypandoc.convert_file(
-            str(temp_fixed_md),
-            'docx',
-            outputfile=str(output_docx_path),
-            extra_args=extra_args
-        )
+            # 2. Chuẩn hóa đường dẫn ảnh trong Markdown
+            fixed_md = _fix_image_refs(markdown_text, images)
 
-        # Xóa file Markdown tạm
-        if temp_fixed_md.exists():
-            try:
-                temp_fixed_md.unlink()
-            except Exception:
-                pass
+            # 3. Ghi Markdown đã chuẩn hóa
+            md_file = tmp_path / "content.md"
+            md_file.write_text(fixed_md, encoding="utf-8")
 
-        # Kiểm tra tính hợp lệ của file DOCX đầu ra
-        is_valid, verify_err = verify_docx_file(output_docx_path)
-        if not is_valid:
-            return False, f"File Word tạo ra không hợp lệ: {verify_err}"
+            # 4. Chạy Pandoc
+            #    --from=markdown+tex_math_dollars+raw_tex: $...$ và $$...$$ → OMML Equation trong Word
+            #    --resource-path: Pandoc tìm hình ảnh trong tmpdir
+            docx_file = tmp_path / output_filename
+            pypandoc.convert_file(
+                str(md_file),
+                "docx",
+                outputfile=str(docx_file),
+                extra_args=[
+                    "--from=markdown+tex_math_dollars+raw_tex+pipe_tables+strikeout",
+                    f"--resource-path={tmp_dir}",
+                ],
+            )
 
-        return True, ""
+            # 5. Đọc DOCX vào memory
+            if not docx_file.exists() or docx_file.stat().st_size == 0:
+                return False, b"", "Pandoc không tạo được file DOCX."
+
+            docx_bytes = docx_file.read_bytes()
+
+        # 6. Kiểm tra nhanh DOCX trong memory
+        ok, err = _verify_docx_bytes(docx_bytes)
+        if not ok:
+            return False, b"", err
+
+        logger.info(f"DOCX tạo thành công: {len(docx_bytes)} bytes.")
+        return True, docx_bytes, ""
 
     except Exception as e:
-        return False, f"Lỗi trong quá trình tạo file Word: {str(e)}"
+        logger.error(f"Lỗi tạo DOCX: {e}")
+        return False, b"", f"Lỗi trong quá trình tạo file Word: {e}"
 
-def verify_docx_file(docx_path: Path) -> Tuple[bool, str]:
-    """
-    Xác minh kỹ thuật file DOCX theo tiêu chuẩn Phần VI:
-    1. File tồn tại
-    2. Dung lượng > 0
-    3. File là một gói ZIP hợp lệ
-    4. Chứa word/document.xml
-    5. Không phải file lỗi HTML hoặc chuỗi lỗi
-    """
-    if not docx_path.exists():
-        return False, "File kết quả không tồn tại."
-
-    size = docx_path.stat().st_size
-    if size == 0:
+def _verify_docx_bytes(data: bytes) -> Tuple[bool, str]:
+    """Kiểm tra nhanh cấu trúc DOCX từ bytes trong memory."""
+    if len(data) == 0:
         return False, "File kết quả có dung lượng 0 bytes."
 
-    # Đọc thử header kiểm tra không phải file HTML
-    try:
-        with open(docx_path, "rb") as f:
-            header = f.read(100)
-            if b"<html" in header.lower() or b"<!doctype html" in header.lower():
-                return False, "Kết quả trả về là trang HTML lỗi thay vì tài liệu Word."
-            # DOCX là zip file, phải bắt đầu bằng PK (0x50 0x4B 0x03 0x04)
-            if not header.startswith(b"PK\x03\x04"):
-                return False, "File không có định dạng nén ZIP chuẩn của Microsoft Word."
-    except Exception as e:
-        return False, f"Không thể đọc header file: {str(e)}"
+    if data[:4] != b"PK\x03\x04":
+        if data[:5].lower() in (b"<html", b"<!doc"):
+            return False, "Kết quả là trang HTML lỗi thay vì file Word."
+        return False, "File không có định dạng ZIP chuẩn của Microsoft Word."
 
-    # Kiểm tra cấu trúc ZIP & document.xml
     try:
-        with zipfile.ZipFile(docx_path, "r") as z:
-            file_list = z.namelist()
-            if "word/document.xml" not in file_list:
-                return False, "Gói tài liệu Word thiếu thành phần cấu trúc chính (word/document.xml)."
-            if "[Content_Types].xml" not in file_list:
-                return False, "Gói tài liệu Word thiếu file [Content_Types].xml."
-            
-            # Đọc thử document.xml
-            doc_xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
-            if not doc_xml.strip():
+        import io
+        with zipfile.ZipFile(io.BytesIO(data), "r") as z:
+            names = z.namelist()
+            if "word/document.xml" not in names:
+                return False, "Gói tài liệu Word thiếu word/document.xml."
+            if "[Content_Types].xml" not in names:
+                return False, "Gói tài liệu Word thiếu [Content_Types].xml."
+            xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
+            if not xml.strip():
                 return False, "Nội dung tài liệu Word bị trống."
     except Exception as e:
-        return False, f"Gói tài liệu Word bị lỗi cấu trúc nén: {str(e)}"
+        return False, f"Gói DOCX bị lỗi cấu trúc: {e}"
 
     return True, ""
-

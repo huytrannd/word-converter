@@ -1,65 +1,88 @@
+import io
 import zipfile
 import pytest
-from pathlib import Path
 from backend.app.docx_generator import (
-    generate_docx_from_markdown,
-    verify_docx_file,
-    fix_image_paths_in_markdown
+    generate_docx_from_markdown_and_images,
+    _verify_docx_bytes,
+    _fix_image_refs,
 )
 
-def test_generate_docx_with_math_and_table(tmp_path):
-    md_file = tmp_path / "math_sample.md"
-    docx_file = tmp_path / "math_sample.docx"
-    
-    md_content = """# Đề Kiểm Tra Toán Học
+MATH_MARKDOWN = r"""# Đề Kiểm Tra Toán Học
 
 ## Câu 1
 Giải phương trình:
 $$x^2 - 4x + 3 = 0$$
 
 ## Câu 2
-Cho biểu thức:
-$$P = \\frac{\\sqrt{x} + 2}{\\sqrt{x} - 2}$$
+Rút gọn biểu thức:
+$$P = \frac{\sqrt{x} + 2}{\sqrt{x} - 2}$$
 
-Hàm số $y = \\int_0^x \\sin(t) dt$.
+## Câu 3
+Đạo hàm của hàm số $y = \sin(x) \cdot e^x$ là gì?
 
-| $x$ | $1$ | $2$ |
-| --- | --- | --- |
-| $y$ | $3$ | $4$ |
+| $x$ | $1$ | $2$ | $3$ |
+|---|---|---|---|
+| $y$ | $0$ | $1$ | $4$ |
 """
-    md_file.write_text(md_content, encoding="utf-8")
-    
-    success, err = generate_docx_from_markdown(md_file, docx_file, tmp_path)
-    assert success is True
-    assert err == ""
-    assert docx_file.exists()
-    assert docx_file.stat().st_size > 0
-    
-    # Kiểm tra cấu trúc XML bên trong docx
-    is_valid, v_err = verify_docx_file(docx_file)
-    assert is_valid is True
-    assert v_err == ""
-    
-    with zipfile.ZipFile(docx_file, "r") as z:
+
+def test_generate_docx_with_math_equations():
+    """DOCX tạo ra phải chứa Word Equation OMML (m:oMath)."""
+    success, docx_bytes, err = generate_docx_from_markdown_and_images(
+        MATH_MARKDOWN, images=[]
+    )
+    assert success is True, f"Thất bại: {err}"
+    assert len(docx_bytes) > 0
+
+    # Kiểm tra OMML equations trong XML
+    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
         xml = z.read("word/document.xml").decode("utf-8")
-        # OMML equation tags do Word nhận diện
-        assert "<m:oMath>" in xml or "<m:oMath " in xml
-        assert "<m:f>" in xml or "<m:f " in xml  # fraction
-        assert "<m:rad>" in xml or "<m:rad " in xml  # square root
+        assert "<m:oMath>" in xml or "<m:oMath " in xml, "Không tìm thấy Word Equation trong DOCX"
+        assert "<m:f>" in xml or "<m:f " in xml, "Không tìm thấy phần tử fraction"
+        assert "<m:rad>" in xml or "<m:rad " in xml, "Không tìm thấy phần tử radical/sqrt"
 
-def test_fix_image_paths_in_markdown(tmp_path):
-    img_file = tmp_path / "diagram1.png"
-    img_file.write_bytes(b"\x89PNG\r\n\x1a\n")
-    
-    content = "Hình học: ![Hinh 1](diagram1.png) và text khác."
-    fixed = fix_image_paths_in_markdown(content, tmp_path)
-    assert img_file.name in fixed
+def test_generate_docx_with_image(tmp_path):
+    """DOCX phải chứa hình ảnh được nhúng vào."""
+    # Tạo PNG 1x1 pixel tối thiểu (PNG header chuẩn)
+    png_bytes = (
+        b'\x89PNG\r\n\x1a\n'
+        b'\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02'
+        b'\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00'
+        b'\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
+    )
+    md_with_img = MATH_MARKDOWN + "\n\n![Hình vẽ minh họa](diagram.png)\n"
+    images = [{"name": "diagram.png", "data": png_bytes}]
 
-def test_verify_docx_file_invalid(tmp_path):
-    fake_docx = tmp_path / "invalid.docx"
-    fake_docx.write_text("<html><body>Error</body></html>")
-    
-    is_valid, err = verify_docx_file(fake_docx)
-    assert is_valid is False
-    assert "HTML" in err or "ZIP" in err
+    success, docx_bytes, err = generate_docx_from_markdown_and_images(
+        md_with_img, images=images
+    )
+    assert success is True, f"Thất bại: {err}"
 
+    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+        names = z.namelist()
+        # Pandoc nhúng ảnh vào word/media/
+        has_image = any("word/media" in n for n in names)
+        assert has_image, f"Không tìm thấy ảnh trong DOCX. Files: {names}"
+
+def test_verify_docx_invalid_html():
+    """File HTML phải bị từ chối."""
+    bad = b"<html><body>Error page</body></html>"
+    ok, err = _verify_docx_bytes(bad)
+    assert ok is False
+    assert "HTML" in err
+
+def test_verify_docx_empty():
+    ok, err = _verify_docx_bytes(b"")
+    assert ok is False
+
+def test_fix_image_refs_replaces_path():
+    md = "Text ![fig](path/to/diagram.png) text"
+    images = [{"name": "diagram.png", "data": b""}]
+    result = _fix_image_refs(md, images)
+    assert "diagram.png" in result
+    # Đường dẫn gốc nên bị thay
+    assert "path/to/diagram.png" not in result
+
+def test_fix_image_refs_no_images():
+    md = "No images here, just text."
+    result = _fix_image_refs(md, images=[])
+    assert result == md
