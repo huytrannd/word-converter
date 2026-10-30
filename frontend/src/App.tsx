@@ -110,7 +110,7 @@ export default function App() {
     try {
       setStatusMessage('Đang chuyển đổi...');
 
-      const res = await fetch('/api/convert', {
+      const res = await fetch('https://word-converter-yx1f.onrender.com/api/convert', {
         method: 'POST',
         body: formData,
       });
@@ -193,9 +193,8 @@ export default function App() {
                 onDragLeave={onDragLeave}
                 onDrop={onDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-8 sm:p-12 text-center cursor-pointer flex flex-col items-center transition-colors ${
-                  isDragging ? 'border-[#E57373] bg-[#FFF7F7]' : 'border-[#F2CACA] bg-white hover:bg-[#FFF7F7]'
-                }`}
+                className={`border-2 border-dashed rounded-xl p-8 sm:p-12 text-center cursor-pointer flex flex-col items-center transition-colors ${isDragging ? 'border-[#E57373] bg-[#FFF7F7]' : 'border-[#F2CACA] bg-white hover:bg-[#FFF7F7]'
+                  }`}
               >
                 <input
                   type="file" ref={fileInputRef} onChange={onFileInputChange}
