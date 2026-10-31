@@ -168,9 +168,6 @@ export default function App() {
           <h1 className="text-3xl sm:text-4xl font-extrabold text-[#292929] text-center mb-3 tracking-tight">
             Chuyển PDF Toán sang Word
           </h1>
-          <p className="text-base text-[#777777] text-center mb-8">
-            Tải đề Toán PDF lên và chuyển thành file Word.
-          </p>
 
           {/* Cảnh báo API key */}
           {systemStatus && !systemStatus.api_key_configured && (
